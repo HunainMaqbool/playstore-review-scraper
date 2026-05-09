@@ -1,0 +1,2 @@
+google-play-scraper==1.2.7
+tqdm==4.66.1
