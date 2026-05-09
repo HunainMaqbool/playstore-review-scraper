@@ -3,11 +3,12 @@ import io
 import re
 import sys
 import os
+from datetime import date
 
 import streamlit as st
 
 sys.path.insert(0, os.path.dirname(__file__))
-from fetcher import fetch_reviews
+from fetcher import RESEARCH_FIELDS, fetch_balanced_reviews_filtered
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -24,13 +25,8 @@ def extract_app_id(raw: str) -> str:
 
 
 def reviews_to_csv_bytes(reviews: list[dict]) -> bytes:
-    fields = [
-        "app_id", "review_id", "user_name", "rating",
-        "content", "thumbs_up", "review_at",
-        "reply_content", "replied_at",
-    ]
     buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    writer = csv.DictWriter(buf, fieldnames=RESEARCH_FIELDS, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(reviews)
     return buf.getvalue().encode("utf-8")
@@ -45,7 +41,7 @@ st.set_page_config(
 )
 
 st.title("🎮 Play Store Review Scraper")
-st.caption("Paste an app ID or full Play Store URL to download reviews as CSV.")
+st.caption("Paste an app ID or full Play Store URL to download balanced research-ready reviews as CSV.")
 
 # ── inputs ───────────────────────────────────────────────────────────────────
 
@@ -54,11 +50,29 @@ raw_input = st.text_input(
     placeholder="e.g. com.king.candycrushsaga  or  https://play.google.com/store/apps/details?id=...",
 )
 
-count = st.selectbox("Number of reviews to scrape", [100, 500, 1000], index=2)
+app_name = st.text_input(
+    "App name",
+    placeholder="e.g. Candy Crush Saga",
+)
 
-sort = st.selectbox("Sort by", ["newest", "rating", "helpfulness"], index=0)
+total_reviews = st.number_input(
+    "Total reviews",
+    min_value=2,
+    max_value=5000,
+    value=200,
+    step=2,
+)
 
-scrape_btn = st.button("Scrape Reviews", type="primary", use_container_width=True)
+date_col_1, date_col_2 = st.columns(2)
+with date_col_1:
+    start_date = st.date_input("Start date", value=None)
+with date_col_2:
+    end_date = st.date_input("End date", value=None)
+
+target_per_group = int(total_reviews) // 2
+st.caption(f"Target split: {target_per_group} positive and {target_per_group} negative reviews.")
+
+scrape_btn = st.button("Scrape Balanced Reviews", type="primary", use_container_width=True)
 
 # ── scrape ───────────────────────────────────────────────────────────────────
 
@@ -73,23 +87,42 @@ if scrape_btn:
                 "Example: `com.spotify.music` or the full store URL."
             )
         else:
-            st.info(f"Scraping **{count}** reviews for `{app_id}` …")
+            display_name = app_name.strip() or app_id
+            if int(total_reviews) % 2 != 0:
+                st.error("Total reviews must be an even number so positive and negative reviews split equally.")
+                st.stop()
+            if start_date and end_date and start_date > end_date:
+                st.error("Start date cannot be after end date.")
+                st.stop()
+
+            st.info(f"Scraping balanced reviews for `{app_id}` …")
             with st.spinner("Fetching reviews from Play Store …"):
                 try:
-                    reviews = fetch_reviews(app_id, count=count, sort=sort)
+                    reviews = fetch_balanced_reviews_filtered(
+                        app_id,
+                        display_name,
+                        total_reviews=int(total_reviews),
+                        start_date=start_date.isoformat() if isinstance(start_date, date) else None,
+                        end_date=end_date.isoformat() if isinstance(end_date, date) else None,
+                    )
                 except Exception as exc:
                     reviews = []
                     st.error(f"Scrape failed: {exc}")
 
             if reviews:
-                st.success(f"Fetched **{len(reviews)}** reviews.")
+                positive_count = sum(1 for r in reviews if r["sentiment_group"] == "positive")
+                negative_count = sum(1 for r in reviews if r["sentiment_group"] == "negative")
+                st.success(
+                    f"Fetched **{len(reviews)}** reviews "
+                    f"({positive_count} positive, {negative_count} negative)."
+                )
 
                 # Preview table
                 import pandas as pd
                 df = pd.DataFrame(reviews)
                 st.subheader("Preview (first 10 rows)")
                 st.dataframe(
-                    df[["user_name", "rating", "content", "review_at"]].head(10),
+                    df[["review_id", "app_name", "score", "word_count", "date", "sentiment_group", "content"]].head(10),
                     use_container_width=True,
                 )
 
